@@ -1,0 +1,383 @@
+import threading
+import multiprocessing
+import time
+import tkinter as tk                     
+from tkinter import ttk 
+import re
+import pip
+import socket
+import pickle
+from queue import Queue
+import json
+
+import threading
+# Sleep normally.
+
+HOST = '10.29.10.135'  # Standard loopback interface address (localhost)
+PORT = 65400        # Port to listen on (non-privileged ports are > 1023)
+
+global client_count
+client_count = 0
+
+global client_queue
+client_queue = []
+
+global client_queue_lock
+client_queue_lock = threading.Lock()
+
+def rights(l):
+
+    s=""
+    for i in l:
+        if i ==True:
+            s+="1"
+        else:
+            s+="0"
+
+    return s
+
+
+def child_connection(addr,conn,pipe,data):
+    print(addr,"connected")
+    pipe.send([addr,"connected"])
+
+    #check if addr in data.
+
+    if data != None:
+        s = rights([data["scanner"],data["Analyzer"],data["Algorithm"]])
+        status=""
+        if s=="111":
+            status = "Full"
+        else:
+            status = "Partial"
+
+        message= [data["name"],status,s]
+
+        conn.sendall(pickle.dumps(message))
+
+    time.sleep(5)
+    while conn:
+        #send some junk.
+        try:
+            conn.sendall(b'live check')
+            time.sleep(5)
+        except:
+            conn = False
+
+    print(addr,"disconnected")
+    pipe.send([addr,"disconnected"])
+
+def server_start(pipe):
+
+    global client_queue
+    global client_queue_lock
+    global  client_count
+
+    try:
+        s=  socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind((HOST, PORT))
+        s.listen()
+        data = pipe.recv()
+        print("Authentication online and operational")
+        while True:
+            if pipe.poll(2):
+                data = pipe.recv()
+
+            conn, addr = s.accept()
+            client_count+=1
+            print('Connected by', addr,'client count:',client_count)
+            addr = addr[0]
+            ###check addr and etc. 
+            d= None
+            for i in data:
+                if i["ip"]==addr:
+                    d=i
+            reg = threading.Thread(target=child_connection,args=(addr,conn,pipe,d), daemon=True)
+            reg.start()
+            ###send permission infos. 
+    except Exception as e:
+        print(e)
+        s.close()
+        
+    s.close()
+
+
+class authentication:
+
+    def __init__(self,root,pipe):
+
+        ###whenever update pipe. send it to server. 
+
+        self.status = {}
+        self.status_color = {}
+
+        self.root = ttk.LabelFrame(root,text="Authentication") 
+        self.root.place(relx=0.05,rely=0.05,relheight=0.55,relwidth=0.9)
+
+        self.new = ttk.LabelFrame(root,text="Create new user") 
+        self.new.place(relx=0.05,rely=0.75,relheight=0.25,relwidth=0.9)
+
+
+        self.unroot = ttk.LabelFrame(root,text="Unauthorized user") 
+        self.unroot.place(relx=0.05,rely=0.6,relheight=0.15,relwidth=0.9)
+
+        self.menubar()
+
+        self.pipe = pipe
+
+        width = [15,12,10,10,10,10]
+        labels = ["IP","Name","Scanner","Analyzer","Algorithm","Submit"]
+
+        for i in range(len(labels)): #Rows
+            self.b = tk.Label(self.new, text=labels[i],width=width[i])#,command=self.rank
+            self.b.configure(activebackground="#f9f9f9")
+            self.b.configure(activeforeground="black")
+            self.b.configure(background="#d9d9d9")
+            self.b.configure(disabledforeground="#a3a3a3")
+            self.b.configure(relief="ridge")
+            self.b.configure(foreground="#000000")
+            self.b.configure(highlightbackground="#d9d9d9")
+            self.b.configure(highlightcolor="black")
+            self.b.grid(row=1, column=i)
+
+
+
+        self.load_json()
+        self.show()
+        self.entry()
+
+        receive = threading.Thread(target=self.comms, daemon=True)
+        receive.start()
+        
+
+    def index_to_dic(self,i):
+        if i ==2:
+            return "scanner"
+        if i ==3:
+            return "Analyzer"
+        if i ==4:
+            return "Algorithm"
+
+    def change_permision(self,var,index,text):
+        current = text.get()
+
+        idx = self.index_to_dic(index)
+        print(index)
+        if current =="ON":
+            var[idx] = False
+            text.set("OFF")
+        else:
+            var[idx] = True
+            text.set("ON")
+
+        self.save_json()
+
+        print(var)
+
+    def show(self):
+        width = [15,10,6,6,6,10,7]
+        self.total = 0
+        for i in self.data:
+            labels= [i["ip"],i["name"],i["scanner"],i["Analyzer"],i["Algorithm"],""," X"]
+            for j in range(len(width)): #Rows
+                if j >=2 and j<=4:
+
+                    infovar=tk.StringVar()
+                    if labels[j] == True:
+                        infovar.set("ON") 
+                    else:
+                        infovar.set("OFF")
+
+                    self.b = tk.Button(self.root, textvariable=infovar,width=width[j],command= lambda l=i,index=j,t=infovar: self.change_permision(l,index,t))#,command=self.rank
+                    self.b.configure(activebackground="#f9f9f9")
+                    self.b.configure(activeforeground="black")
+                    self.b.configure(background="#d9d9d9")
+                    self.b.configure(disabledforeground="#a3a3a3")
+                    self.b.configure(relief="ridge")
+                    self.b.configure(foreground="#000000")
+                    self.b.configure(highlightbackground="#d9d9d9")
+                    self.b.configure(highlightcolor="black")
+                    self.b.grid(row= self.total+2, column=j)
+
+                elif j ==len(width)-2:
+
+                    if i["ip"] not in self.status:
+                        sta= tk.StringVar()
+                        sta.set("Disconnected")
+                        self.status[i["ip"]] = sta
+
+                    self.b = tk.Label(self.root, textvariable=self.status[i["ip"]],width=width[j])#,command=self.rank
+                    self.b.configure(activebackground="#f9f9f9")
+                    self.b.configure(activeforeground="black")
+                    self.b.configure(disabledforeground="#a3a3a3")
+                    self.b.configure(relief="ridge")
+                    self.b.configure(foreground="#000000")
+                    self.b.configure(highlightbackground="#d9d9d9")
+                    self.b.configure(highlightcolor="black")
+                    self.b.grid(row= self.total+2, column=j)
+
+                    if self.status[i["ip"]].get()=="Connected":
+                        self.b.configure(background="#97FEA8")
+                    else:
+                        self.b.configure(background="red")
+
+                    self.status_color[i["ip"]] = self.b
+
+                elif j ==len(width)-1:
+                    self.b = tk.Button(self.root, text=labels[j],width=width[j],command = lambda l=self.total: self.delete_row(l))#,command=self.rank
+ 
+                    self.b.grid(row= self.total+2, column=j)
+
+                else:
+                    self.b = tk.Label(self.root, text=labels[j],width=width[j])#,command=self.rank
+                    self.b.configure(activebackground="#f9f9f9")
+                    self.b.configure(activeforeground="black")
+                    self.b.configure(background="#d9d9d9")
+                    self.b.configure(disabledforeground="#a3a3a3")
+                    self.b.configure(relief="ridge")
+                    self.b.configure(foreground="#000000")
+                    self.b.configure(highlightbackground="#d9d9d9")
+                    self.b.configure(highlightcolor="black")
+                    self.b.grid(row= self.total+2, column=j)
+
+            self.total +=1
+
+
+    def delete_row(self,idx):
+
+        self.data.pop(idx)
+        self.clear()
+        self.menubar()
+        self.show()
+        self.save_json()
+
+    def entry(self):
+        width = [15,10,8,8,8,8]
+
+        ips = tk.StringVar()
+        Name = tk.StringVar()
+        Scanner = tk.BooleanVar()
+        Analyzer = tk.BooleanVar()
+        Algo = tk.BooleanVar()
+
+        self.entrys = [ips,Name,Scanner,Analyzer,Algo]
+
+        for j in range(len(width)): #Rows
+                if j ==len(width)-1:
+                    self.b=tk.Button(self.new, text="Submit",width=width[j],command=self.submit)#,command=self.rank
+                    self.b.configure(activebackground="#f9f9f9")
+                    self.b.configure(activeforeground="black")
+                    self.b.grid(row=2, column=j)
+
+                if j >=2 and j<=4:
+                    self.b=tk.Checkbutton(self.new, variable=self.entrys[j])#,command=self.rank
+                    self.b.grid(row=2, column=j)
+                if j>=0 and j <2:
+                    self.b=tk.Entry(self.new, textvariable=self.entrys[j],width=width[j])#,command=self.rank
+                    self.b.grid(row=2, column=j)
+
+    def submit(self):
+
+        infos=[]
+        for i in self.entrys:
+            infos.append(i.get())
+
+        dic = ["ip","name","scanner","Analyzer","Algorithm"]
+        d={}
+        for i in range(len(infos)):
+            d[dic[i]] = infos[i]
+
+        if infos[0]!="" and infos[1] !="":
+
+            self.data.append(d)
+            self.clear()
+
+            self.menubar()
+            self.show()
+            self.save_json()
+
+        #add to json.
+
+        #destory. 
+
+        #redraw. 
+
+    def menubar(self):
+        width = [15,10,6,6,6,10,8]
+        labels = ["IP","Name","Scanner","Analyzer","Algorithm","Status","Delete"]
+
+        for i in range(len(labels)): #Rows
+            self.b = tk.Label(self.root, text=labels[i],width=width[i])#,command=self.rank
+            self.b.configure(activebackground="#f9f9f9")
+            self.b.configure(activeforeground="black")
+            self.b.configure(background="#d9d9d9")
+            self.b.configure(disabledforeground="#a3a3a3")
+            self.b.configure(relief="ridge")
+            self.b.configure(foreground="#000000")
+            self.b.configure(highlightbackground="#d9d9d9")
+            self.b.configure(highlightcolor="black")
+            self.b.grid(row=1, column=i)
+
+    def clear(self):
+        for widget in self.root.winfo_children():
+            widget.destroy()
+
+    def save_json(self):
+        with open('sys', 'w') as outfile:
+            json.dump(self.data, outfile)
+
+        #send it to pipe. 
+        self.pipe.send(self.data)
+
+    def load_json(self):
+        with open('sys') as json_file:
+            self.data = json.load(json_file)
+
+
+    def comms(self):
+
+        self.pipe.send(self.data)
+
+        while True:
+            message = self.pipe.recv()
+
+            try:
+                print(message)
+                addr = message[0]
+                status = message[1]
+
+                #find that column.
+                self.status[addr].set(status)
+
+                if status == "connected":
+                    self.status_color[addr]["background"]="#97FEA8"
+                    self.status[addr].set("Connected")
+                else:
+                    self.status_color[addr]["background"]="red"
+                    self.status[addr].set("Disconnected")
+            except Exception as e:
+                print(e)
+
+
+
+if __name__ == '__main__':
+
+    multiprocessing.freeze_support()
+    root = tk.Tk() 
+    root.title("GoodTrade Authentication Management") 
+    root.geometry("565x500")
+
+
+    #root.protocol("WM_DELETE_WINDOW", on_closing)
+    request_pipe, receive_pipe = multiprocessing.Pipe()
+
+
+    request_pipe, receive_pipe = multiprocessing.Pipe()
+    p = multiprocessing.Process(target=server_start, args=(receive_pipe,),daemon=True)
+    p.daemon=True
+    p.start()
+
+    v = authentication(root,request_pipe)
+
+    
+    root.mainloop()
